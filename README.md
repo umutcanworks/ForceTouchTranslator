@@ -1,12 +1,16 @@
-# ForceTouchTranslator 🚀
+# ForceTouchTranslator
 
 **ForceTouchTranslator** is a lightweight, instant translation tool for macOS. It allows you to **Force Click (Deep Press)** on your trackpad over any selected sentence or hovered word to display a native Apple-style dark mode translation popover instantly.
 
 Powered by [Hammerspoon](https://www.hammerspoon.org/).
 
+| Hover Single-Word Mode | Selected Sentence Mode |
+|:---:|:---:|
+| <img src="https://github.com/user-attachments/assets/48bccdc3-5c4e-4176-9288-75e13ce6a30c" width="420" /> | <img src="https://github.com/user-attachments/assets/31f3d1fc-13a5-4cef-b1a2-c6f8e0b0b7f3" width="420" /> |
+
 ---
 
-## ✨ Features
+## Features
 
 - **Gesture & Trackpad Native Integration**: Uses macOS Force Touch (pressure stage 2) events.
 - **Smart Text Detection**:
@@ -19,7 +23,7 @@ Powered by [Hammerspoon](https://www.hammerspoon.org/).
 
 ---
 
-## 📦 Installation (30 Seconds)
+## Installation (Very Easy)
 
 ### Prerequisites
 1. Install **[Hammerspoon](https://www.hammerspoon.org/)** for macOS.
@@ -37,7 +41,7 @@ Powered by [Hammerspoon](https://www.hammerspoon.org/).
 
 ---
 
-## ⚙️ Configuration
+## Configuration
 
 You can customize the target language and ignored apps at the top of `forcetouchtranslator.lua`:
 
@@ -54,6 +58,6 @@ local IGNORED_APPS = {
 
 ---
 
-## 📄 License
+## License
 
 This project is licensed under the [MIT License](LICENSE).
