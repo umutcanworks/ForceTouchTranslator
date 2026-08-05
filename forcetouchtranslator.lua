@@ -136,7 +136,10 @@ local function getTextAtPosition(pos)
     local charRange = rangeElem:parameterizedAttributeValue("AXRangeForPosition", pos)
     if type(charRange) == "table" then
         local loc = charRange.loc or charRange.location
-        if loc then
+        local len = charRange.len or charRange.length
+        -- WebKit and Chromium return dummy {location = 0, length = 1} for unsupported AXRangeForPosition queries.
+        -- Only accept loc > 0 and len > 0 for native text components.
+        if loc and len and loc > 0 and len > 0 then
             -- A. PDF / Native Accessibility
             local startLoc = math.max(0, loc - 50)
             local chunkRange = {loc = startLoc, len = 100, location = startLoc, length = 100}
@@ -346,7 +349,7 @@ end
 -- ==============================================================================
 
 local function fetchTextAndTranslate(targetPos)
-    -- Step 1: Check native Accessibility API selected text (Safari, TextEdit, Pages, etc.)
+    -- Step 1: Check native Accessibility API selected text (Safari, TextEdit, Pages, Notes, Xcode, etc.)
     local system = hs.axuielement.systemWideElement()
     if system then
         local focused = system:attributeValue("AXFocusedUIElement")
@@ -362,28 +365,25 @@ local function fetchTextAndTranslate(targetPos)
         end
     end
 
-    -- Step 2: If AX API returns no selection (Chrome, Electron, VS Code, PDFs),
-    -- check selection via Cmd+C WITHOUT breaking active user selection.
     local oldClipboardData = hs.pasteboard.readAllData()
-    hs.pasteboard.clearContents()
+    local SENTINEL = "__FTT_EMPTY_MARKER_" .. tostring(os.time()) .. "__"
+    
+    -- Step 2: Check active text selection via Cmd+C (for apps/browsers where AXSelectedText is not exposed)
+    hs.pasteboard.setContents(SENTINEL)
     hs.eventtap.keyStroke({"cmd"}, "c", 0)
     
-    hs.timer.doAfter(0.08, function()
+    hs.timer.doAfter(0.06, function()
         local copiedText = hs.pasteboard.getContents()
         
-        -- If Cmd+C copied text, the user had an active text selection
-        if copiedText and type(copiedText) == "string" and copiedText:match("%S") then
+        -- If copied text is not SENTINEL, the user had an active text selection
+        if copiedText and copiedText ~= SENTINEL and type(copiedText) == "string" and copiedText:match("%S") then
             local trimmed = copiedText:match("^%s*(.-)%s*$")
-            
-            -- Restore user clipboard
             if oldClipboardData then hs.pasteboard.writeAllData(oldClipboardData) end
-            
             translateAndShow(trimmed, targetPos)
             return
         end
 
-        -- Step 3: If NO text was selected on screen:
-        -- Method A: Try reading the single word under cursor via AX API (clickless)
+        -- Step 3: If NO text was selected, try native AX API (clickless single word for native apps)
         local axWord = getTextAtPosition(targetPos)
         if axWord and type(axWord) == "string" and axWord:match("%S") then
             if oldClipboardData then hs.pasteboard.writeAllData(oldClipboardData) end
@@ -391,29 +391,39 @@ local function fetchTextAndTranslate(targetPos)
             return
         end
 
-        -- Method B: Simulate double click to select and copy single word under cursor
+        -- Step 4: Fallback for Web Browsers (Safari, Chrome, Firefox) & Electron apps:
+        -- Simulate a precise double-click at targetPos to highlight the single word under cursor
+        hs.pasteboard.setContents(SENTINEL)
         local evt = hs.eventtap.event
-        evt.newMouseEvent(evt.types.leftMouseDown, targetPos):post()
+        local e1 = evt.newMouseEvent(evt.types.leftMouseDown, targetPos)
+        e1:setProperty(evt.properties.mouseEventClickState, 1)
+        e1:post()
         
-        hs.timer.doAfter(0.01, function()
-            evt.newMouseEvent(evt.types.leftMouseUp, targetPos):post()
+        hs.timer.doAfter(0.015, function()
+            local e2 = evt.newMouseEvent(evt.types.leftMouseUp, targetPos)
+            e2:setProperty(evt.properties.mouseEventClickState, 1)
+            e2:post()
             
-            hs.timer.doAfter(0.01, function()
-                evt.newMouseEvent(evt.types.leftMouseDown, targetPos):setProperty(evt.properties.mouseEventClickState, 2):post()
+            hs.timer.doAfter(0.015, function()
+                local e3 = evt.newMouseEvent(evt.types.leftMouseDown, targetPos)
+                e3:setProperty(evt.properties.mouseEventClickState, 2)
+                e3:post()
                 
-                hs.timer.doAfter(0.01, function()
-                    evt.newMouseEvent(evt.types.leftMouseUp, targetPos):setProperty(evt.properties.mouseEventClickState, 2):post()
+                hs.timer.doAfter(0.015, function()
+                    local e4 = evt.newMouseEvent(evt.types.leftMouseUp, targetPos)
+                    e4:setProperty(evt.properties.mouseEventClickState, 2)
+                    e4:post()
                     
-                    hs.timer.doAfter(0.05, function()
+                    hs.timer.doAfter(0.04, function()
                         hs.eventtap.keyStroke({"cmd"}, "c", 0)
                         
-                        hs.timer.doAfter(0.12, function()
+                        hs.timer.doAfter(0.08, function()
                             local wordText = hs.pasteboard.getContents()
                             
                             -- Restore user clipboard
                             if oldClipboardData then hs.pasteboard.writeAllData(oldClipboardData) end
                             
-                            if wordText and type(wordText) == "string" and wordText:match("%S") then
+                            if wordText and wordText ~= SENTINEL and type(wordText) == "string" and wordText:match("%S") then
                                 translateAndShow(wordText:match("^%s*(.-)%s*$"), targetPos)
                             else
                                 hs.alert.show("No text found to translate.")
