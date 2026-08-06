@@ -10,4 +10,4 @@ Currently, only the latest version (main branch) of this project is actively sup
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability within this project, please do not create a public issue. Instead, report it directly to [eposta-adresini-buraya-yaz@gmail.com] so it can be addressed safely.
+If you discover a security vulnerability within this project, please do not create a public issue. Instead, report it directly to [umutcanyilmaz.dev@gmail.com] so it can be addressed safely.
