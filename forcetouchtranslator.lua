@@ -6,6 +6,7 @@
 local CONFIG = {
     targetLanguage = "tr",
     ignoredApps    = { "Finder", "Dock" },
+    nativeBlacklist= { "Preview" },
     escKeyCode     = 53,
     dragThreshold  = 10,
     fadeStep       = 0.3,
@@ -16,6 +17,9 @@ local CONFIG = {
 
 CONFIG._ignoredSet = {}
 for _, name in ipairs(CONFIG.ignoredApps) do CONFIG._ignoredSet[name] = true end
+
+CONFIG._nativeBlacklistSet = {}
+for _, name in ipairs(CONFIG.nativeBlacklist) do CONFIG._nativeBlacklistSet[name] = true end
 
 local LANGUAGES = {
     { code = "auto",  name = "Auto Detect", sourceOnly = true },
@@ -87,7 +91,7 @@ end
 
 local function escapeJSTemplate(str)
     if not str then return "[]" end
-    return str:gsub("`","\\`"):gsub("%$","\\$"):gsub("<","\\u003c")
+    return str:gsub("\\", "\\\\"):gsub("`","\\`"):gsub("%$","\\$"):gsub("<","\\u003c")
 end
 
 local function distance(p1, p2)
@@ -171,7 +175,27 @@ local SHARED_JS = [=[
         const dictContent = document.getElementById("dictContent");
         dictContent.innerHTML = "";
 
-        if (data && data.length > 1 && Array.isArray(data[1])) {
+        if (data && data.dict && Array.isArray(data.dict)) {
+            dictContainer.style.display = "block";
+            data.dict.forEach(posGroup => {
+                if (posGroup.pos) {
+                    const el = document.createElement("div"); el.className = "dict-pos"; el.innerText = posGroup.pos;
+                    dictContent.appendChild(el);
+                }
+                if (Array.isArray(posGroup.entry)) {
+                    posGroup.entry.forEach(entry => {
+                        const row = document.createElement("div"); row.className = "dict-entry";
+                        const wordEl = document.createElement("div"); wordEl.className = "dict-word"; wordEl.innerText = entry.word;
+                        const revEl = document.createElement("div"); revEl.className = "dict-reverse";
+                        if (Array.isArray(entry.reverse_translation)) revEl.innerText = entry.reverse_translation.join(", ");
+                        row.appendChild(wordEl); row.appendChild(revEl); dictContent.appendChild(row);
+                    });
+                } else if (Array.isArray(posGroup.terms)) {
+                    const row = document.createElement("div"); row.className = "dict-entry"; row.innerText = posGroup.terms.join(", ");
+                    dictContent.appendChild(row);
+                }
+            });
+        } else if (data && data.length > 1 && Array.isArray(data[1])) {
             dictContainer.style.display = "block";
             data[1].forEach(posGroup => {
                 if (!Array.isArray(posGroup)) return;
@@ -197,6 +221,24 @@ local SHARED_JS = [=[
         }
     }
 
+    function updateBubbleContent(originalText, translatedText, rawJson) {
+        document.getElementById('sourceText').innerText = originalText;
+        document.getElementById('translatedText').innerText = translatedText;
+        
+        if (rawJson && rawJson.trim() !== "") {
+            try {
+                const data = JSON.parse(rawJson);
+                renderDictionary(data);
+            } catch(e) {
+                document.getElementById('dictContainer').style.display = 'none';
+            }
+        } else {
+            document.getElementById('dictContainer').style.display = 'none';
+        }
+        
+        emitRenderComplete();
+    }
+
     function emitRenderComplete() {
         if (window.webkit && window.webkit.messageHandlers.ftt) {
             const cont = document.querySelector('.container');
@@ -209,7 +251,7 @@ local SHARED_JS = [=[
     }
 
     async function doTranslate(text, sl, tl) {
-        const url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=" + sl + "&tl=" + tl + "&dt=t&dt=bd";
+        const url = "https://translate.googleapis.com/translate_a/single?client=at&dt=t&dt=bd&dj=1&sl=" + sl + "&tl=" + tl;
         const resp = await fetch(url, {
             method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: "q=" + encodeURIComponent(text)
@@ -217,7 +259,13 @@ local SHARED_JS = [=[
         return await resp.json();
     }
     function extractTranslation(data) {
-        let t = ""; if (data && data[0]) data[0].forEach(b => { if (b[0]) t += b[0]; }); return t;
+        let t = ""; 
+        if (data && data.sentences) {
+            data.sentences.forEach(b => { if (b.trans) t += b.trans; });
+        } else if (data && data[0]) {
+            data[0].forEach(b => { if (b[0]) t += b[0]; }); 
+        }
+        return t;
     }
     function swapLanguages() {
         const ss = document.getElementById("sourceLang");
@@ -274,7 +322,7 @@ local SWAP_SVG   = [=[<svg onclick="swapLanguages()" style="cursor:pointer; widt
 local CLEAR_SVG  = [=[<svg onclick="clearText()" style="cursor:pointer; width:12px; height:12px; fill:#8E8E93; opacity: 0.8;" title="Clear Text" viewBox="0 0 384 512"><path d="M342.6 150.6c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L192 210.7 86.6 105.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3L146.7 256 41.4 361.4c-12.5 12.5-12.5 32.8 0 45.3s32.8 12.5 45.3 0L192 301.3 297.4 406.6c12.5 12.5 32.8 12.5 45.3 0s12.5-32.8 0-45.3L237.3 256 342.6 150.6z"/></svg>]=]
 local COPY_SVG   = [=[<svg onclick="copyTranslation()" style="cursor:pointer; width:13px; height:13px; fill:#0A84FF; opacity: 0.8; transition: opacity 0.2s;" onmouseover="this.style.opacity='1'" onmouseout="this.style.opacity='0.8'" title="Copy Translation" viewBox="0 0 448 512"><path d="M208 0H332.1c12.7 0 24.9 5.1 33.9 14.1l67.9 67.9c9 9 14.1 21.2 14.1 33.9V336c0 26.5-21.5 48-48 48H208c-26.5 0-48-21.5-48-48V48c0-26.5 21.5-48 48-48zM48 128h80v64H64V448H256V416h64v40c0 30.9-25.1 56-56 56H48c-30.9 0-56-25.1-56-56V184c0-30.9 25.1-56 56-56z"/></svg>]=]
 
-local function buildBubbleHTML(originalText, translatedText, rawJsonBody)
+local function buildBubbleHTML(orig, trans, json)
     return [=[<!DOCTYPE html><html><head><meta charset="utf-8">
         <style>]=] .. SHARED_CSS .. [=[</style>
         </head><body>
@@ -290,22 +338,20 @@ local function buildBubbleHTML(originalText, translatedText, rawJsonBody)
                 </div>
                 <div class="text-box">
                     <div class="header">Original</div>
-                    <div class="content" id="sourceText">]=] .. escapeHTML(originalText) .. [=[</div>
+                    <div class="content" id="sourceText"></div>
                 </div>
                 <div class="text-box">
                     <div class="header translation-header" style="display: flex; justify-content: space-between; align-items: center;">
                         <span>Translation</span>
                         ]=] .. COPY_SVG .. [=[
                     </div>
-                    <div class="content" id="translatedText">]=] .. escapeHTML(translatedText) .. [=[</div>
+                    <div class="content" id="translatedText"></div>
                 </div>
 ]=] .. DICT_SECTION .. [=[
             </div>
             <script>
                 ]=] .. SHARED_JS .. [=[
-                const initialJson = `]=] .. escapeJSTemplate(rawJsonBody) .. [=[`;
-                try { renderDictionary(JSON.parse(initialJson)); } catch(e) {}
-                emitRenderComplete();
+                updateBubbleContent(`]=] .. orig .. [=[`, `]=] .. trans .. [=[`, `]=] .. json .. [=[`);
             </script>
         </body></html>]=]
 end
@@ -467,7 +513,7 @@ local function showTranslationBubble(originalText, translatedText, rawJsonBody, 
     local hasDictionary = false
     if rawJsonBody then
         local ok, data = pcall(hs.json.decode, rawJsonBody)
-        if ok and data and data[2] then hasDictionary = true end
+        if ok and data and (data.dict or data[2]) then hasDictionary = true end
     end
     
     local w = calcInitialBubbleWidth(originalText, translatedText, hasDictionary)
@@ -479,20 +525,26 @@ local function showTranslationBubble(originalText, translatedText, rawJsonBody, 
     if x + w > screen.x + screen.w then x = targetPos.x - w - 15 end
     if y + h > screen.y + screen.h then y = targetPos.y - h - 15 end
 
+    local escapedOriginal = escapeJSTemplate(originalText or "")
+    local escapedTranslated = escapeJSTemplate(translatedText or "")
+    local escapedJson = escapeJSTemplate(rawJsonBody or "")
+
     local rect = hs.geometry.rect(x, y, w, h)
     if not AppState.bubbleWebview then
         AppState.bubbleWebview = hs.webview.new(rect, {developerExtrasEnabled = true}, AppState.ucc)
         AppState.bubbleWebview:windowStyle({"borderless", "nonactivating", "utility"})
         AppState.bubbleWebview:transparent(true)
         AppState.bubbleWebview:level(hs.drawing.windowLevels.popUpMenu)
+        AppState.bubbleWebview:html(buildBubbleHTML(escapedOriginal, escapedTranslated, escapedJson))
     else
         AppState.bubbleWebview:frame(rect)
+        local jsCall = string.format("updateBubbleContent(`%s`, `%s`, `%s`);", escapedOriginal, escapedTranslated, escapedJson)
+        AppState.bubbleWebview:evaluateJavaScript(jsCall)
     end
     AppState.bubbleWebview:alpha(0.0)
     
     AppState.bubbleReadyData = { screen = screen }
     
-    AppState.bubbleWebview:html(buildBubbleHTML(originalText, translatedText, rawJsonBody))
     AppState.bubbleWebview:show()
 
     AppState.bubbleMouseTap = hs.eventtap.new(
@@ -574,29 +626,48 @@ local function tryNativeAXExtraction(pos)
     local sys = hs.axuielement.systemWideElement()
     if not sys then return nil end
     
+    local app = hs.application.frontmostApplication()
+    local appName = app and app:name() or ""
+    
+    -- Check for manual selection first
+    local selectedText = nil
     local focused = sys:attributeValue("AXFocusedUIElement")
     if focused then
         local sel = focused:attributeValue("AXSelectedText")
-        if type(sel) == "string" and sel:match("%S") then return sel end
+        if type(sel) == "string" and sel:match("%S") then
+            selectedText = sel
+        end
     end
     
+    -- If selection is multi-word (contains space), it's a deliberate paragraph selection → use it
+    if selectedText and selectedText:find("%s") then
+        return selectedText
+    end
+    
+    -- Now check if app is blacklisted for coordinate-based extraction
+    if CONFIG._nativeBlacklistSet[appName] then return nil end
+    
+    -- Try coordinate-based extraction (accurate for the word under cursor)
     local elem = sys:elementAtPosition(pos)
-    if not elem then return nil end
-
-    local rangeElem = getElementWithRangeSupport(elem)
-    if rangeElem then
-        local cr = rangeElem:parameterizedAttributeValue("AXRangeForPosition", pos)
-        if type(cr) == "table" and cr.location and cr.length then
-            local loc = cr.loc or cr.location
-            local startLoc = math.max(0, loc - 50)
-            local chunkRange = { loc = startLoc, len = 100, location = startLoc, length = 100 }
-            local chunk = rangeElem:parameterizedAttributeValue("AXStringForRange", chunkRange)
-            if type(chunk) == "string" then
-                local w = getWordAroundIndex(chunk, loc - startLoc)
-                if w and w:match("%S") then return w end
+    if elem then
+        local rangeElem = getElementWithRangeSupport(elem)
+        if rangeElem then
+            local cr = rangeElem:parameterizedAttributeValue("AXRangeForPosition", pos)
+            if type(cr) == "table" and cr.location and cr.length then
+                local loc = cr.loc or cr.location
+                local startLoc = math.max(0, loc - 50)
+                local chunkRange = { loc = startLoc, len = 100, location = startLoc, length = 100 }
+                local chunk = rangeElem:parameterizedAttributeValue("AXStringForRange", chunkRange)
+                if type(chunk) == "string" then
+                    local w = getWordAroundIndex(chunk, loc - startLoc)
+                    if w and w:match("%S") then return w end
+                end
             end
         end
     end
+    
+    -- Last resort: single-word AXSelectedText (could be stale but better than nothing)
+    if selectedText then return selectedText end
 
     return nil 
 end
@@ -607,7 +678,7 @@ local function translateAndShow(text, targetPos)
 
     AppState.requestId = AppState.requestId + 1
     local reqId = AppState.requestId
-    local url = "https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=" .. CONFIG.targetLanguage .. "&dt=t&dt=bd"
+    local url = "https://translate.googleapis.com/translate_a/single?client=at&dt=t&dt=bd&dj=1&sl=auto&tl=" .. CONFIG.targetLanguage
     
     local headers = {
         ["User-Agent"]    = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
@@ -619,10 +690,16 @@ local function translateAndShow(text, targetPos)
     hs.http.doAsyncRequest(url, "POST", "q=" .. urlencode(text), headers, function(status, body)
         if status == 200 then
             local data = hs.json.decode(body)
-            if data and data[1] then
+            if data and (data.sentences or data[1]) then
                 local translated = ""
-                for _, block in ipairs(data[1]) do
-                    if block[1] then translated = translated .. block[1] end
+                if data.sentences then
+                    for _, block in ipairs(data.sentences) do
+                        if block.trans then translated = translated .. block.trans end
+                    end
+                elseif data[1] then
+                    for _, block in ipairs(data[1]) do
+                        if block[1] then translated = translated .. block[1] end
+                    end
                 end
                 showTranslationBubble(text, translated, body, targetPos, reqId)
             else
@@ -657,24 +734,36 @@ local function fallbackExtractionAndTranslate(pos)
     local oldClip = hs.pasteboard.getContents()
     hs.pasteboard.clearContents()
 
-    hs.timer.doAfter(0.02, function()
-        doDoubleClick(pos)
+    -- 1. Try to copy whatever is currently selected (e.g. manual selection)
+    hs.eventtap.keyStroke({"cmd"}, "c", 10000)
 
-        hs.timer.doAfter(0.05, function()
-            hs.eventtap.keyStroke({"cmd"}, "c", 0)
+    hs.timer.doAfter(0.05, function()
+        local text = hs.pasteboard.getContents()
+        
+        if text and type(text) == "string" and text:match("%S") then
+            -- Manual selection found!
+            if oldClip then hs.pasteboard.setContents(oldClip) else hs.pasteboard.clearContents() end
+            translateAndShow(text, pos)
+        else
+            -- 2. No manual selection found. Fall back to double-clicking to select the word.
+            doDoubleClick(pos)
             
             hs.timer.doAfter(0.05, function()
-                local text = hs.pasteboard.getContents()
+                hs.eventtap.keyStroke({"cmd"}, "c", 10000)
                 
-                if oldClip then hs.pasteboard.setContents(oldClip) else hs.pasteboard.clearContents() end
-                
-                if text and type(text) == "string" and text:match("%S") then
-                    translateAndShow(text, pos)
-                else
-                    hs.alert.show("No text found under cursor.")
-                end
+                hs.timer.doAfter(0.05, function()
+                    local wordText = hs.pasteboard.getContents()
+                    
+                    if oldClip then hs.pasteboard.setContents(oldClip) else hs.pasteboard.clearContents() end
+                    
+                    if wordText and type(wordText) == "string" and wordText:match("%S") then
+                        translateAndShow(wordText, pos)
+                    else
+                        hs.alert.show("No text found under cursor.")
+                    end
+                end)
             end)
-        end)
+        end
     end)
 end
 
