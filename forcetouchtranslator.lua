@@ -2,6 +2,7 @@
 -- ForceTouchTranslator for macOS
 -- Powered by Hammerspoon
 -- ==============================================================================
+---@diagnostic disable: undefined-global
 
 local CONFIG = {
     targetLanguage = "tr",
@@ -9,8 +10,6 @@ local CONFIG = {
     nativeBlacklist= { "Preview" },
     escKeyCode     = 53,
     dragThreshold  = 10,
-    fadeStep       = 0.3,
-    fadeInterval   = 0.005,
     dictBubbleSize = { w = 340, h = 280 },
     menubarSize    = { w = 350, h = 320 },
 }
@@ -43,6 +42,8 @@ local LANGUAGES = {
 local AppState = {
     requestId          = 0,
     forceClickDetected = false,
+    ignoreCurrentClick = false,
+    isWakingUp         = false,
     targetPos          = nil,
     
     lastSourceLang     = "auto",
@@ -58,11 +59,11 @@ local AppState = {
     bubbleWebview      = nil,
     bubbleMouseTap     = nil,
     bubbleEscapeTap    = nil,
-    fadeTimer          = nil,
     bubbleReadyData    = nil,
 
     menubarWebview     = nil,
-    menubarMouseTap    = nil
+    menubarMouseTap    = nil,
+    previousApp        = nil
 }
 
 local function stopAndNil(key)
@@ -156,6 +157,7 @@ local SHARED_CSS = [=[
 
 local SHARED_JS = [=[
     let textHistory = [];
+    let _currentRequestId = 0;
     function getSourceText() {
         const el = document.getElementById("sourceText");
         return el.tagName === "TEXTAREA" ? el.value : el.innerText;
@@ -251,7 +253,7 @@ local SHARED_JS = [=[
     }
 
     async function doTranslate(text, sl, tl) {
-        const url = "https://translate.googleapis.com/translate_a/single?client=at&dt=t&dt=bd&dj=1&sl=" + sl + "&tl=" + tl;
+        const url = "https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&dt=bd&dj=1&sl=" + sl + "&tl=" + tl;
         const resp = await fetch(url, {
             method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: "q=" + encodeURIComponent(text)
@@ -300,12 +302,18 @@ local SHARED_JS = [=[
         }
         document.getElementById("translatedText").innerText = "Translating...";
         document.getElementById("dictContainer").style.display = "none";
+        
+        _currentRequestId++;
+        const reqId = _currentRequestId;
+        
         try {
             const data = await doTranslate(sourceText, sl, tl);
+            if (reqId !== _currentRequestId) return;
             document.getElementById("translatedText").innerText = extractTranslation(data);
             renderDictionary(data);
             emitRenderComplete();
         } catch (err) {
+            if (reqId !== _currentRequestId) return;
             document.getElementById("translatedText").innerText = "Error: " + err.message;
             emitRenderComplete();
         }
@@ -433,12 +441,11 @@ end
 -- ==============================================================================
 
 local function destroyBubble()
-    stopAndNil("fadeTimer")
     stopAndNil("bubbleMouseTap")
     stopAndNil("bubbleEscapeTap")
     if AppState.bubbleWebview then
         AppState.bubbleWebview:alpha(0)
-        AppState.bubbleWebview:hide() 
+        AppState.bubbleWebview:hide()
     end
     AppState.bubbleReadyData = nil
 end
@@ -448,6 +455,10 @@ local function destroyMenubar()
     if AppState.menubarWebview then
         AppState.menubarWebview:alpha(0)
         deleteAndNil("menubarWebview")
+    end
+    if AppState.previousApp then
+        AppState.previousApp:activate()
+        AppState.previousApp = nil
     end
 end
 
@@ -519,11 +530,15 @@ local function showTranslationBubble(originalText, translatedText, rawJsonBody, 
     local w = calcInitialBubbleWidth(originalText, translatedText, hasDictionary)
     local h = 420
 
-    local screen = (hs.screen.find(targetPos) or hs.mouse.getCurrentScreen()):frame()
+    local s = hs.screen.find(targetPos) or hs.mouse.getCurrentScreen()
+    if not s then return end
+    local screen = s:frame()
     local x = targetPos.x + 15
     local y = targetPos.y + 15
     if x + w > screen.x + screen.w then x = targetPos.x - w - 15 end
+    x = math.max(screen.x, x)
     if y + h > screen.y + screen.h then y = targetPos.y - h - 15 end
+    y = math.max(screen.y, y)
 
     local escapedOriginal = escapeJSTemplate(originalText or "")
     local escapedTranslated = escapeJSTemplate(translatedText or "")
@@ -538,7 +553,7 @@ local function showTranslationBubble(originalText, translatedText, rawJsonBody, 
         AppState.bubbleWebview:html(buildBubbleHTML(escapedOriginal, escapedTranslated, escapedJson))
     else
         AppState.bubbleWebview:frame(rect)
-        local jsCall = string.format("updateBubbleContent(`%s`, `%s`, `%s`);", escapedOriginal, escapedTranslated, escapedJson)
+        local jsCall = string.format("document.getElementById('sourceText').innerText=''; document.getElementById('translatedText').innerText=''; document.getElementById('dictContent').innerHTML=''; document.getElementById('dictContainer').style.display='none'; updateBubbleContent(`%s`, `%s`, `%s`);", escapedOriginal, escapedTranslated, escapedJson)
         AppState.bubbleWebview:evaluateJavaScript(jsCall)
     end
     AppState.bubbleWebview:alpha(0.0)
@@ -562,7 +577,10 @@ local function showTranslationBubble(originalText, translatedText, rawJsonBody, 
     AppState.bubbleMouseTap:start()
 
     AppState.bubbleEscapeTap = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
-        if e:getKeyCode() == CONFIG.escKeyCode then destroyBubble() end
+        if e:getKeyCode() == CONFIG.escKeyCode then 
+            destroyBubble() 
+            return true
+        end
         return false
     end)
     AppState.bubbleEscapeTap:start()
@@ -592,17 +610,24 @@ local function getWordAroundIndex(text, utf16_index)
 
     if byteIdx < 1 or byteIdx > #text then return nil end
 
+    local max_dist = 100
     local s = byteIdx
-    while s > 1 do
+    while s > 1 and (byteIdx - s) < max_dist do
         local b = text:byte(s - 1)
         if b < 128 and string.char(b):match("[%s%p]") then break end
         s = s - 1
     end
+    while s < byteIdx and text:byte(s) >= 0x80 and text:byte(s) < 0xC0 do
+        s = s + 1
+    end
 
     local e = byteIdx
-    while e < #text do
+    while e < #text and (e - byteIdx) < max_dist do
         local b = text:byte(e + 1)
         if b < 128 and string.char(b):match("[%s%p]") then break end
+        e = e + 1
+    end
+    while e < #text and text:byte(e + 1) >= 0x80 and text:byte(e + 1) < 0xC0 do
         e = e + 1
     end
 
@@ -676,9 +701,18 @@ local function translateAndShow(text, targetPos)
     text = trim(text)
     if not text or text == "" then return end
 
+    if #text > 4000 then
+        local limit = 4000
+        while limit > 1 and text:byte(limit) >= 0x80 and text:byte(limit) < 0xC0 do
+            limit = limit - 1
+        end
+        if limit > 0 and text:byte(limit) >= 0xC0 then limit = limit - 1 end
+        text = text:sub(1, limit) .. "..."
+    end
+
     AppState.requestId = AppState.requestId + 1
     local reqId = AppState.requestId
-    local url = "https://translate.googleapis.com/translate_a/single?client=at&dt=t&dt=bd&dj=1&sl=auto&tl=" .. CONFIG.targetLanguage
+    local url = "https://translate.googleapis.com/translate_a/single?client=gtx&dt=t&dt=bd&dj=1&sl=auto&tl=" .. CONFIG.targetLanguage
     
     local headers = {
         ["User-Agent"]    = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko)",
@@ -689,8 +723,8 @@ local function translateAndShow(text, targetPos)
 
     hs.http.doAsyncRequest(url, "POST", "q=" .. urlencode(text), headers, function(status, body)
         if status == 200 then
-            local data = hs.json.decode(body)
-            if data and (data.sentences or data[1]) then
+            local ok, data = pcall(hs.json.decode, body)
+            if ok and data and (data.sentences or data[1]) then
                 local translated = ""
                 if data.sentences then
                     for _, block in ipairs(data.sentences) do
@@ -703,10 +737,10 @@ local function translateAndShow(text, targetPos)
                 end
                 showTranslationBubble(text, translated, body, targetPos, reqId)
             else
-                hs.alert.show("Translation could not be retrieved.")
+                if reqId == AppState.requestId then hs.alert.show("Translation could not be retrieved.") end
             end
         else
-            hs.alert.show("Translation API Error: " .. tostring(status))
+            if reqId == AppState.requestId then hs.alert.show("Translation API Error: " .. tostring(status)) end
         end
     end)
 end
@@ -726,44 +760,60 @@ local function doDoubleClick(pos)
     local e2U = hs.eventtap.event.newMouseEvent(hs.eventtap.event.types.leftMouseUp, pos)
     e2U:setProperty(hs.eventtap.event.properties.mouseEventClickState, 2)
     
-    e1D:post(); e1U:post()
-    e2D:post(); e2U:post()
+    e1D:post(); hs.timer.usleep(2000)
+    e1U:post(); hs.timer.usleep(5000)
+    e2D:post(); hs.timer.usleep(2000)
+    e2U:post()
 end
 
 local function fallbackExtractionAndTranslate(pos)
-    local oldClip = hs.pasteboard.getContents()
+    local oldClip = hs.pasteboard.readAllData()
     hs.pasteboard.clearContents()
+    local initialCount = hs.pasteboard.changeCount()
 
-    -- 1. Try to copy whatever is currently selected (e.g. manual selection)
-    hs.eventtap.keyStroke({"cmd"}, "c", 10000)
-
-    hs.timer.doAfter(0.05, function()
-        local text = hs.pasteboard.getContents()
-        
-        if text and type(text) == "string" and text:match("%S") then
-            -- Manual selection found!
-            if oldClip then hs.pasteboard.setContents(oldClip) else hs.pasteboard.clearContents() end
-            translateAndShow(text, pos)
+    local function pollClipboard(maxTries, currentTry, callback)
+        if currentTry > maxTries then
+            callback(nil)
+            return
+        end
+        if hs.pasteboard.changeCount() ~= initialCount then
+            callback(hs.pasteboard.getContents())
         else
-            -- 2. No manual selection found. Fall back to double-clicking to select the word.
-            doDoubleClick(pos)
-            
-            hs.timer.doAfter(0.05, function()
-                hs.eventtap.keyStroke({"cmd"}, "c", 10000)
-                
-                hs.timer.doAfter(0.05, function()
-                    local wordText = hs.pasteboard.getContents()
-                    
-                    if oldClip then hs.pasteboard.setContents(oldClip) else hs.pasteboard.clearContents() end
-                    
-                    if wordText and type(wordText) == "string" and wordText:match("%S") then
-                        translateAndShow(wordText, pos)
-                    else
-                        hs.alert.show("No text found under cursor.")
-                    end
-                end)
+            hs.timer.doAfter(0.02, function()
+                pollClipboard(maxTries, currentTry + 1, callback)
             end)
         end
+    end
+
+    hs.timer.doAfter(0.02, function()
+        -- 1. Try to copy whatever is currently selected (e.g. manual selection)
+        hs.eventtap.keyStroke({"cmd"}, "c", 10000)
+    
+        pollClipboard(10, 1, function(text)
+            if text and type(text) == "string" and text:match("%S") then
+                -- Manual selection found!
+                if oldClip then hs.pasteboard.writeAllData(oldClip) else hs.pasteboard.clearContents() end
+                translateAndShow(text, pos)
+            else
+                -- 2. No manual selection found. Fall back to double-clicking to select the word.
+                doDoubleClick(pos)
+                
+                hs.timer.doAfter(0.05, function()
+                    initialCount = hs.pasteboard.changeCount()
+                    hs.eventtap.keyStroke({"cmd"}, "c", 10000)
+                    
+                    pollClipboard(10, 1, function(wordText)
+                        if oldClip then hs.pasteboard.writeAllData(oldClip) else hs.pasteboard.clearContents() end
+                        
+                        if wordText and type(wordText) == "string" and wordText:match("%S") then
+                            translateAndShow(wordText, pos)
+                        else
+                            hs.alert.show("No text found under cursor.")
+                        end
+                    end)
+                end)
+            end
+        end)
     end)
 end
 
@@ -786,19 +836,27 @@ AppState.tap = hs.eventtap.new({ hs.eventtap.event.types.gesture }, function(eve
         if not AppState.forceClickDetected then
             destroyBubble()
             AppState.forceClickDetected = true
+            AppState.ignoreCurrentClick = false
             AppState.targetPos = hs.mouse.absolutePosition()
 
             local app = hs.application.frontmostApplication()
             if app and CONFIG._ignoredSet[app:name()] then
-                AppState.forceClickDetected = false
+                AppState.ignoreCurrentClick = true
                 return false
             end
+        elseif AppState.ignoreCurrentClick then
+            return false
         end
         return true 
     end
 
     if AppState.forceClickDetected and (td.stage < 2 or td.pressure == 0.0) then
         AppState.forceClickDetected = false
+        if AppState.ignoreCurrentClick then
+            AppState.ignoreCurrentClick = false
+            return false
+        end
+        
         if distance(AppState.targetPos, hs.mouse.absolutePosition()) > CONFIG.dragThreshold then return false end
         
         local currentTargetPos = AppState.targetPos 
@@ -821,14 +879,18 @@ end)
 AppState.tap:start()
 
 AppState.watchdogTimer = hs.timer.doEvery(2, function()
-    if AppState.tap and not AppState.tap:isEnabled() then AppState.tap:start() end
+    if AppState.tap and not AppState.tap:isEnabled() and not AppState.isWakingUp then AppState.tap:start() end
 end)
 
 AppState.wakeWatcher = hs.caffeinate.watcher.new(function(eventType)
     if eventType == hs.caffeinate.watcher.screensDidWake or eventType == hs.caffeinate.watcher.systemDidWake then
+        AppState.isWakingUp = true
         if AppState.tap then
             AppState.tap:stop()
-            hs.timer.doAfter(2, function() AppState.tap:start() end)
+            hs.timer.doAfter(2, function() 
+                if AppState.tap then AppState.tap:start() end
+                AppState.isWakingUp = false
+            end)
         end
     end
 end)
@@ -852,6 +914,8 @@ end
 local function toggleMenubar()
     if AppState.menubarWebview then destroyMenubar(); return end
 
+    AppState.previousApp = hs.application.frontmostApplication()
+
     local frame = AppState.menubar:frame()
     if not frame then return end
 
@@ -859,7 +923,9 @@ local function toggleMenubar()
     local x = frame.x - (w / 2) + (frame.w / 2)
     local y = frame.y + frame.h + 5
 
-    local screen = hs.mouse.getCurrentScreen():frame()
+    local s = hs.mouse.getCurrentScreen()
+    if not s then return end
+    local screen = s:frame()
     if x + w > screen.x + screen.w then x = screen.x + screen.w - w - 10 end
 
     local rect = hs.geometry.rect(x, y, w, h)
