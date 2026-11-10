@@ -2,11 +2,12 @@
 
 ## Supported Versions
 
-Currently, only the latest version (main branch) of this project is actively supported with security updates.
+Currently, only the latest releases of this project are actively supported with security updates.
 
 | Version | Supported          |
 | ------- | ------------------ |
-| Latest  | :white_check_mark: |
+| 3.0.x   | :white_check_mark: |
+| < 3.0   | :x:                |
 
 ## Reporting a Vulnerability
 

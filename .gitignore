@@ -1,1 +1,19 @@
+# macOS System Files
 .DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# Editor & IDE Directories
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Hammerspoon & Build / Runtime
+*.so
+*.dylib
+/tmp/
+*.log
