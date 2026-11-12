@@ -11,4 +11,4 @@ Currently, only the latest releases of this project are actively supported with 
 
 ## Reporting a Vulnerability
 
-If you discover a security vulnerability within this project, please do not create a public issue. Instead, report it directly to [umutcanyilmaz.dev@gmail.com] so it can be addressed safely.
+If you discover a security vulnerability within this project, please do not create a public issue. Instead, please report it via GitHub Security Advisories or Private Vulnerability Reporting so it can be addressed safely.

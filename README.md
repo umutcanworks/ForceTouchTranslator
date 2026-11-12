@@ -2,11 +2,6 @@
 
 A lightweight macOS utility that translates words, selected sentences, or full paragraphs instantly when you Force Click (Deep Press) on your trackpad. It uses a borderless, native Liquid Glass popover. Powered by Hammerspoon and fully compatible with **macOS 27.2** and **Preview (`PDFKit`)**.
 
-### The Backstory
-I built this during my summer IT internship. I use a base model M4 MacBook with 256GB storage, so I avoid installing heavy Electron-based dictionary apps just to translate documentation or articles. I wanted the native "Apple Look Up" feel, but routed through Google Translate. 
-
-Writing a simple script to capture text sounded easy, but dealing with macOS accessibility permissions, Electron apps ignoring native APIs, PDFKit deselection quirks in Preview, and WindowServer crashes turned it into a serious architecture project. Here is the honest result of that process.
-
 ### Features
 * **Native Trackpad Integration:** Listens specifically for macOS Force Touch (pressure stage 2) events.
 * **Smart Text Detection (Single Word & Multi-Paragraph):** If you select a sentence or paragraph and Force Click on top of it, it translates the entire selection. If you just hover over a single word and Force Click, it translates only that word.
